@@ -1,11 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { supabase } from './supabaseClient';
+import { supabase } from './supabaseClient'; // Conexión segura
 
-const WEEKDAYS = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes'];
+// --- CONSTANTES GLOBALES DE DISEÑO ---
+const WEEKDAYS_SHORT = ['L', 'M', 'X', 'J', 'V', 'S', 'D'];
 const WEEKDAYS_FULL = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
-const MONTHS = [
-  'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 
-  'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'
+const WEEKDAYS_SEM = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes'];
+const MONTHS_LOWER = [
+  'enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 
+  'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'
 ];
 const SECTION_PIN = "1234";
 
@@ -28,45 +30,32 @@ const FAQ_ITEMS = [
   }
 ];
 
-export default function App() {
-  const [subjects, setSubjects] = useState([]);
-  const [tasks, setTasks] = useState([]);
-  const [loading, setLoading] = useState(true);
+// --- COMPONENTE 1: WIDGET DE CALENDARIO (ESTILO IOS UNIFICADO) ---
+function CalendarWidget({ 
+  subjects = [], 
+  tasks = [], 
+  selectedDate, 
+  setSelectedDate, 
+  handleToggleTask, 
+  handleDeleteTask,
+  viewMode,
+  setViewMode
+}) {
+  const [currentMonth, setCurrentMonth] = useState(selectedDate ? selectedDate.getMonth() : 5); 
+  const [currentYear, setCurrentYear] = useState(selectedDate ? selectedDate.getFullYear() : 2026);
 
-  // Estados para vistas de calendario
-  const [viewMode, setViewMode] = useState('mensual'); 
-  const [selectedDate, setSelectedDate] = useState(new Date(2026, 5, 10)); 
-  const [currentMonth, setCurrentMonth] = useState(5); 
-  const [currentYear, setCurrentYear] = useState(2026);
-
-  // Estados de control de modals y formularios
-  const [activeSubject, setActiveSubject] = useState(null);
-  const [editingSubject, setEditingSubject] = useState(null);
-  const [newTaskTitle, setNewTaskTitle] = useState('');
-  const [newTaskSubject, setNewTaskSubject] = useState('');
-  const [newTaskDate, setNewTaskDate] = useState('2026-06-10');
-  
-  const [activeFaq, setActiveFaq] = useState(null);
-  const [inputPin, setInputPin] = useState('');
-  const [pinError, setPinError] = useState('');
-
-  // --- REFS PARA CONTROL DE GESTOS EN MÓVIL ---
   const containerRef = useRef(null);
-  const [containerWidth, setContainerWidth] = useState(0);
   const [dragOffset, setDragOffset] = useState(0);
   const [isDragging, setIsDragging] = useState(false);
   const touchStartX = useRef(0);
 
   const handleTouchStart = (e) => {
-    if (containerRef.current) {
-      setContainerWidth(containerRef.current.offsetWidth);
-    }
     touchStartX.current = e.targetTouches[0].clientX;
     setIsDragging(true);
   };
 
   const handleTouchMove = (e) => {
-    if (!isDragging || !containerWidth) return;
+    if (!isDragging || !containerRef.current) return;
     const currentX = e.targetTouches[0].clientX;
     const deltaX = currentX - touchStartX.current;
 
@@ -76,24 +65,313 @@ export default function App() {
     } else if (viewMode === 'mensual' && deltaX < 0) {
       clampedDelta = -Math.pow(-deltaX, 0.7); 
     }
-
     setDragOffset(clampedDelta);
   };
 
   const handleTouchEnd = () => {
-    if (!isDragging) return;
+    if (!isDragging || !containerRef.current) return;
     setIsDragging(false);
-
-    const snapThreshold = containerWidth * 0.20;
+    const width = containerRef.current.offsetWidth;
+    const snapThreshold = width * 0.20;
 
     if (dragOffset < -snapThreshold && viewMode === 'semanal') {
       setViewMode('mensual');
     } else if (dragOffset > snapThreshold && viewMode === 'mensual') {
       setViewMode('semanal');
     }
-
     setDragOffset(0);
   };
+
+  const getDaysInMonth = (year, month) => new Date(year, month + 1, 0).getDate();
+  const getFirstDayOfMonth = (year, month) => {
+    const day = new Date(year, month, 1).getDay();
+    return day === 0 ? 6 : day - 1; 
+  };
+
+  const daysInMonth = getDaysInMonth(currentYear, currentMonth);
+  const firstDayIndex = getFirstDayOfMonth(currentYear, currentMonth);
+
+  const calendarDays = [];
+  for (let i = 0; i < firstDayIndex; i++) {
+    calendarDays.push(null);
+  }
+  for (let i = 1; i <= daysInMonth; i++) {
+    calendarDays.push(new Date(currentYear, currentMonth, i));
+  }
+
+  const getTasksForDate = (date) => {
+    if (!date || !Array.isArray(tasks)) return [];
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    const localString = `${year}-${month}-${day}`;
+    return tasks.filter(t => t && t.due_date === localString);
+  };
+
+  const hasClassesOnDayOfWeek = (date) => {
+    if (!date || !Array.isArray(subjects)) return false;
+    const weekdayName = WEEKDAYS_FULL[date.getDay()];
+    return subjects.some(s => s && Array.isArray(s.schedule) && s.schedule.some(sc => sc.day === weekdayName));
+  };
+
+  const getWeeklyData = (dayName) => {
+    const dayClasses = subjects.filter(s => s && Array.isArray(s.schedule) && s.schedule.some(sc => sc.day === dayName));
+    const dayTasks = tasks.filter(t => {
+      if (!t || !t.due_date || typeof t.due_date !== 'string') return false;
+      const parts = t.due_date.split('-');
+      if (parts.length !== 3) return false;
+      const [y, m, d] = parts.map(Number);
+      const taskDate = new Date(y, m - 1, d); 
+      return WEEKDAYS_FULL[taskDate.getDay()] === dayName && !t.completed;
+    });
+    return { dayClasses, dayTasks };
+  };
+
+  const activeIndex = viewMode === 'mensual' ? 1 : 0;
+  const containerWidthValue = containerRef.current?.offsetWidth || 1;
+  const viewsTranslatePercent = -(activeIndex * 50) + (dragOffset / containerWidthValue) * 50;
+
+  const activeDateTasks = getTasksForDate(selectedDate);
+  const activeDateClasses = subjects.filter(s => 
+    s && Array.isArray(s.schedule) && s.schedule.some(sc => sc.day === WEEKDAYS_FULL[selectedDate ? selectedDate.getDay() : 0])
+  );
+  const hasEvents = activeDateTasks.length > 0 || activeDateClasses.length > 0;
+
+  return (
+    <div className="bg-[#1c1c1e] rounded-[2.2rem] border border-white/[0.05] shadow-2xl p-6 select-none overflow-hidden text-slate-100 flex flex-col md:flex-row gap-8 min-h-[340px]">
+      
+      {/* SECCIÓN IZQUIERDA: CALENDARIO */}
+      <div 
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleTouchEnd}
+        className="flex-1 flex flex-col justify-between"
+      >
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <h3 className="text-3xl font-extrabold text-white tracking-tight capitalize px-2">
+              {MONTHS_LOWER[currentMonth]}
+            </h3>
+            {viewMode === 'mensual' && (
+              <div className="flex items-center gap-1">
+                <button 
+                  onClick={() => {
+                    if (currentMonth === 0) {
+                      setCurrentMonth(11);
+                      setCurrentYear(currentYear - 1);
+                    } else {
+                      setCurrentMonth(currentMonth - 1);
+                    }
+                  }} 
+                  className="p-1.5 rounded-full hover:bg-white/5 transition-colors text-[#8e8e93] hover:text-white"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M15 19l-7-7 7-7" />
+                  </svg>
+                </button>
+                <button 
+                  onClick={() => {
+                    if (currentMonth === 11) {
+                      setCurrentMonth(0);
+                      setCurrentYear(currentYear + 1);
+                    } else {
+                      setCurrentMonth(currentMonth + 1);
+                    }
+                  }} 
+                  className="p-1.5 rounded-full hover:bg-white/5 transition-colors text-[#8e8e93] hover:text-white"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M9 5l7 7-7 7" />
+                  </svg>
+                </button>
+              </div>
+            )}
+          </div>
+
+          <div className="relative overflow-hidden w-full">
+            <div 
+              ref={containerRef}
+              className={`flex w-[200%] ${isDragging ? 'transition-none' : 'transition-transform duration-300 cubic-bezier(0.16, 1, 0.3, 1)'}`}
+              style={{ transform: `translateX(${viewsTranslatePercent}%)` }}
+            >
+              
+              {/* VISTA SEMANAL */}
+              <div className="w-1/2 shrink-0 pr-2">
+                <div className="grid grid-cols-5 gap-2">
+                  {WEEKDAYS_SEM.map((day) => {
+                    const { dayClasses, dayTasks } = getWeeklyData(day);
+                    return (
+                      <div key={day} className="rounded-2xl p-3 bg-[#0c0c0d]/40 border border-white/[0.04] flex flex-col min-h-[160px]">
+                        <span className="text-[10px] font-extrabold uppercase tracking-wider text-indigo-400 mb-2 border-b border-white/[0.04] pb-0.5 block">
+                          {day.substring(0, 3)}
+                        </span>
+                        <div className="space-y-1 mb-2">
+                          {dayClasses.map(cls => (
+                            <div key={cls.id} className="text-[10px] text-indigo-200 truncate">
+                              • {cls.name}
+                            </div>
+                          ))}
+                        </div>
+                        <div className="mt-auto text-[9px] text-emerald-400">
+                          {dayTasks.length > 0 ? `${dayTasks.length} pendiente(s)` : '✓ Libre'}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* VISTA MENSUAL */}
+              <div className="w-1/2 shrink-0 pl-2">
+                <div className="grid grid-cols-7 gap-y-2 gap-x-1 text-center">
+                  {WEEKDAYS_SHORT.map((day, idx) => (
+                    <span 
+                      key={idx} 
+                      className={`text-[11px] font-extrabold uppercase py-1 ${idx === 6 ? 'text-red-500' : 'text-[#8e8e93]'}`}
+                    >
+                      {day}
+                    </span>
+                  ))}
+
+                  {calendarDays.map((date, idx) => {
+                    if (!date) {
+                      return <div key={`empty-${idx}`} className="p-2 opacity-0"></div>;
+                    }
+
+                    const isSelected = selectedDate && date.toDateString() === selectedDate.toDateString();
+                    const hasClasses = hasClassesOnDayOfWeek(date);
+                    const dayTasks = getTasksForDate(date);
+                    const hasTasks = dayTasks.length > 0;
+
+                    return (
+                      <button
+                        key={date.toDateString()}
+                        onClick={() => setSelectedDate(date)}
+                        className={`p-1.5 rounded-full flex flex-col items-center justify-center relative transition-all h-9 w-9 aspect-square mx-auto ${
+                          isSelected 
+                            ? 'bg-white text-[#0c0c0d] font-black shadow-md' 
+                            : 'hover:bg-white/5 border border-transparent text-slate-300'
+                        }`}
+                      >
+                        <span className="text-sm font-semibold">{date.getDate()}</span>
+                        {!isSelected && (hasClasses || hasTasks) && (
+                          <span className={`absolute bottom-0.5 w-1 h-1 rounded-full ${hasTasks ? 'bg-amber-400' : 'bg-indigo-400'}`} />
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* SECCIÓN DERECHA: EVENTOS Y TAREAS */}
+      <div className="w-full md:w-[42%] border-t md:border-t-0 md:border-l border-white/[0.06] pt-6 md:pt-0 md:pl-8 flex flex-col justify-center">
+        {!hasEvents ? (
+          <div className="text-center py-8">
+            <h4 className="text-xl font-bold text-[#8e8e93] tracking-tight">
+              No hay eventos
+            </h4>
+            <p className="text-sm text-slate-500 mt-1 font-medium">
+              ¡Disfruta del día!
+            </p>
+          </div>
+        ) : (
+          <div className="space-y-4 max-h-[250px] overflow-y-auto pr-1">
+            <span className="text-[10px] font-extrabold uppercase tracking-widest text-indigo-400 block border-b border-white/[0.05] pb-1.5">
+              Eventos programados
+            </span>
+            
+            {activeDateClasses.map(cls => {
+              const time = cls.schedule.find(sc => sc.day === WEEKDAYS_FULL[selectedDate ? selectedDate.getDay() : 0])?.time;
+              return (
+                <div key={cls.id} className="p-2.5 rounded-xl bg-[#0c0c0d]/40 border border-white/[0.04] text-xs flex justify-between items-center">
+                  <div>
+                    <p className="font-bold text-slate-200">{cls.name}</p>
+                    <p className="text-[10px] text-slate-400 mt-0.5">{time}</p>
+                  </div>
+                  <span className="px-1.5 py-0.5 rounded-lg bg-indigo-500/10 border border-indigo-500/25 text-[9px] font-bold text-indigo-300">
+                    {cls.classroom}
+                  </span>
+                </div>
+              );
+            })}
+
+            {activeDateTasks.map(task => {
+              const subj = subjects.find(s => s && s.id === task.subject_id);
+              return (
+                <div key={task.id} className="flex items-center justify-between p-2.5 rounded-xl bg-[#0c0c0d]/40 border border-white/[0.04] text-xs group">
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={task.completed}
+                      onChange={() => handleToggleTask(task)}
+                      className="w-4 h-4 rounded border-white/20 bg-black/40 text-indigo-600 cursor-pointer"
+                    />
+                    <span className={`${task.completed ? 'line-through text-slate-500' : 'text-slate-200 font-medium'}`}>
+                      [{subj ? subj.name.substring(0,5) : '..'}..] {task.title}
+                    </span>
+                  </div>
+                  <button onClick={() => handleDeleteTask(task.id)} className="text-slate-500 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                    </svg>
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+    </div>
+  );
+}
+
+// --- COMPONENTE 2: ORQUESTRADOR PRINCIPAL (DEFAULT EXPORT) ---
+export default function App() {
+  if (!supabase) {
+    return (
+      <div className="min-h-screen bg-[#0c0c0d] flex items-center justify-center text-slate-100 p-6 text-center">
+        <div className="max-w-md p-8 bg-[#1c1c1e] border border-white/[0.05] rounded-[2.2rem] space-y-4 shadow-2xl">
+          <div className="w-12 h-12 rounded-full bg-red-500/10 flex items-center justify-center mx-auto text-red-400">
+            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+            </svg>
+          </div>
+          <h2 className="text-xl font-bold text-red-400">Error de Configuración</h2>
+          <p className="text-sm text-[#8e8e93]">
+            No se han detectado tus credenciales en el archivo <code className="bg-black/40 px-1.5 py-0.5 rounded text-indigo-300">.env.local</code>.
+          </p>
+          <div className="bg-[#0c0c0d] text-left p-4 rounded-xl text-xs space-y-2 text-slate-400 border border-white/[0.03]">
+            <p>1. Para solucionar esto de manera permanente, verifica que tu archivo <code className="text-white">.env.local</code> esté en la raíz del proyecto.</p>
+            <p>2. Detén tu servidor local en la terminal presionando <code className="text-white">Ctrl + C</code>.</p>
+            <p>3. Reinícialo ejecutando <code className="text-white">npm run dev</code> para forzar la lectura de las claves.</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const [subjects, setSubjects] = useState([]);
+  const [tasks, setTasks] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  const [viewMode, setViewMode] = useState('mensual'); 
+  const [selectedDate, setSelectedDate] = useState(new Date(2026, 5, 10)); // 10 de Junio de 2026
+
+  const [newTaskTitle, setNewTaskTitle] = useState('');
+  const [newTaskSubject, setNewTaskSubject] = useState('');
+  const [newTaskDate, setNewTaskDate] = useState('2026-06-10');
+  
+  const [activeSubject, setActiveSubject] = useState(null);
+  const [editingSubject, setEditingSubject] = useState(null);
+  const [activeFaq, setActiveFaq] = useState(null);
+  const [inputPin, setInputPin] = useState('');
+  const [pinError, setPinError] = useState('');
 
   // Cargar materias
   useEffect(() => {
@@ -209,132 +487,57 @@ export default function App() {
     }
   };
 
-  // Lógica de fechas
-  const getDaysInMonth = (year, month) => new Date(year, month + 1, 0).getDate();
-  const getFirstDayOfMonth = (year, month) => {
-    const day = new Date(year, month, 1).getDay();
-    return day === 0 ? 6 : day - 1; 
-  };
-
-  const daysInMonth = getDaysInMonth(currentYear, currentMonth);
-  const firstDayIndex = getFirstDayOfMonth(currentYear, currentMonth);
-
-  const calendarDays = [];
-  for (let i = 0; i < firstDayIndex; i++) {
-    calendarDays.push(null);
-  }
-  for (let i = 1; i <= daysInMonth; i++) {
-    calendarDays.push(new Date(currentYear, currentMonth, i));
-  }
-
-  const handlePrevMonth = () => {
-    if (currentMonth === 0) {
-      setCurrentMonth(11);
-      setCurrentYear(currentYear - 1);
-    } else {
-      setCurrentMonth(currentMonth - 1);
-    }
-  };
-
-  const handleNextMonth = () => {
-    if (currentMonth === 11) {
-      setCurrentMonth(0);
-      setCurrentYear(currentYear + 1);
-    } else {
-      setCurrentMonth(currentMonth + 1);
-    }
-  };
-
-  const getTasksForDate = (date) => {
-    if (!date) return [];
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, '0');
-    const day = String(date.getDate()).padStart(2, '0');
-    const localString = `${year}-${month}-${day}`;
-    return tasks.filter(t => t.due_date === localString);
-  };
-
-  const hasClassesOnDayOfWeek = (date) => {
-    if (!date) return false;
-    const weekdayName = WEEKDAYS_FULL[date.getDay()];
-    return subjects.some(s => s.schedule && s.schedule.some(sc => sc.day === weekdayName));
-  };
-
   const formatFriendlyDate = (date) => {
     const dayName = WEEKDAYS_FULL[date.getDay()];
     const dayNum = date.getDate();
-    const monthName = MONTHS[date.getMonth()];
-    return `${dayName}, ${dayNum} de ${monthName}`;
+    return `${dayName}, ${dayNum}`;
   };
-
-  const getWeeklyData = (dayName) => {
-    const dayClasses = subjects.filter(s => s.schedule && s.schedule.some(sc => sc.day === dayName));
-    const dayTasks = tasks.filter(t => {
-      const [y, m, d] = t.due_date.split('-').map(Number);
-      const taskDate = new Date(y, m - 1, d); 
-      return WEEKDAYS_FULL[taskDate.getDay()] === dayName && !t.completed;
-    });
-
-    return { dayClasses, dayTasks };
-  };
-
-  // --- INTERPOLACIÓN DE MOVIMIENTO ---
-  const activeIndex = viewMode === 'mensual' ? 1 : 0;
-  const widthDenominator = containerWidth || 1;
-  const viewsTranslatePercent = -(activeIndex * 50) + (dragOffset / widthDenominator) * 50;
-  const capsuleTranslatePercent = (activeIndex * 100) - (dragOffset / widthDenominator) * 100;
-  const clampedCapsuleTranslate = Math.max(0, Math.min(100, capsuleTranslatePercent));
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-slate-950 flex items-center justify-center text-slate-100">
+      <div className="min-h-screen bg-[#0c0c0d] flex items-center justify-center text-slate-100">
         <div className="text-center space-y-3">
-          <div className="w-9 h-9 border-[3.5px] border-indigo-500 border-t-transparent rounded-full animate-spin mx-auto"></div>
-          <p className="text-xs uppercase tracking-widest text-slate-400 font-semibold">Cargando Portal...</p>
+          <div className="w-8 h-8 border-4 border-white/20 border-t-white rounded-full animate-spin mx-auto"></div>
+          <p className="text-xs uppercase tracking-widest text-[#8e8e93] font-semibold">Cargando...</p>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-slate-950 via-slate-900 to-indigo-950 text-slate-100 font-sans relative overflow-x-hidden p-4 md:p-8 pb-24">
+    <div className="min-h-screen bg-[#0c0c0d] text-[#f2f2f7] font-sans p-6 md:p-12 pb-24 relative overflow-x-hidden selection:bg-white/20">
       
-      {/* Mesh Gradient Animado (Pulsación difuminada estilo iOS) */}
-      <div className="absolute top-[-10%] left-[-10%] w-[600px] h-[600px] rounded-full bg-indigo-600/10 blur-[120px] animate-pulse duration-10000 pointer-events-none"></div>
-      <div className="absolute bottom-[20%] right-[-15%] w-[700px] h-[700px] rounded-full bg-pink-500/5 blur-[150px] animate-pulse duration-7000 pointer-events-none"></div>
-      <div className="absolute top-[30%] left-[20%] w-[500px] h-[500px] rounded-full bg-purple-600/5 blur-[130px] animate-pulse duration-8000 pointer-events-none"></div>
+      {/* Mesh Glow ambiental muy sutil en las esquinas */}
+      <div className="absolute top-0 left-0 w-[500px] h-[500px] rounded-full bg-indigo-500/[0.02] blur-[120px] pointer-events-none"></div>
+      <div className="absolute bottom-0 right-0 w-[500px] h-[500px] rounded-full bg-purple-500/[0.02] blur-[120px] pointer-events-none"></div>
 
-      <div className="max-w-6xl mx-auto space-y-10">
+      <div className="max-w-6xl mx-auto space-y-12">
         
-        {/* HEADER */}
-        <header className="flex flex-col md:flex-row items-center justify-between gap-4 p-5 rounded-2xl bg-white/[0.03] backdrop-blur-2xl border border-white/[0.08] shadow-[inset_0_1px_1px_rgba(255,255,255,0.05)] shadow-2xl">
-          <div>
-            <span className="text-[10px] uppercase tracking-widest text-indigo-400 font-extrabold">Portal Académico</span>
-            <h1 className="text-xl md:text-2xl font-black tracking-tight bg-gradient-to-r from-white via-slate-200 to-slate-400 bg-clip-text text-transparent">
-              Ingeniería de Software
-            </h1>
-          </div>
-          
-          <nav className="flex items-center gap-1.5 bg-black/35 p-1 rounded-full border border-white/[0.06]">
-            <a href="#materias" className="px-4 py-2 text-xs font-bold rounded-full hover:bg-white/[0.06] transition-all">
-              Materias
-            </a>
-            <a href="#cronograma" className="px-4 py-2 text-xs font-bold rounded-full hover:bg-white/[0.06] transition-all">
-              Cronograma
-            </a>
-            <a href="#guia" className="px-4 py-2 text-xs font-bold rounded-full hover:bg-white/[0.06] transition-all">
-              Guía UNEG
-            </a>
-          </nav>
+        {/* ENCABEZADO CENTRADO DE LA 2DA FOTO */}
+        <header className="text-center space-y-4 py-8">
+          <h1 className="text-4xl md:text-5xl lg:text-6xl font-black tracking-tight text-white select-none">
+            Ingeniería en Materiales
+          </h1>
+          <p className="text-sm md:text-base text-slate-300 max-w-2xl mx-auto leading-relaxed select-none font-medium">
+            Web dedicada a la carrera de Ingeniería en Materiales, con recursos, documentación y herramientas para estudiantes.
+          </p>
         </header>
 
-        {/* MATERIAS */}
-        <section id="materias" className="space-y-4">
-          <div className="flex items-center justify-between">
-            <h2 className="text-lg font-extrabold text-white/95 tracking-tight">Materias del Semestre</h2>
-            <span className="text-[11px] text-slate-400">Presiona una para ver aulas, planes y guías</span>
-          </div>
+        {/* BOTONES NAVEGACIÓN "PILL" CENTRADOS DE LA 2DA FOTO */}
+        <div className="flex items-center justify-center gap-2.5 select-none px-2">
+          <a href="#materias" className="px-5 py-2 rounded-full bg-white/[0.04] border border-white/[0.08] hover:bg-white/[0.08] text-xs font-bold tracking-wide transition-all duration-300 text-[#f2f2f7] hover:text-white">
+            Materias
+          </a>
+          <a href="#cronograma" className="px-5 py-2 rounded-full bg-white/[0.04] border border-white/[0.08] hover:bg-white/[0.08] text-xs font-bold tracking-wide transition-all duration-300 text-[#f2f2f7] hover:text-white">
+            Cronograma
+          </a>
+          <a href="#guia" className="px-5 py-2 rounded-full bg-white/[0.04] border border-white/[0.08] hover:bg-white/[0.08] text-xs font-bold tracking-wide transition-all duration-300 text-[#f2f2f7] hover:text-white">
+            Guía UNEG
+          </a>
+        </div>
 
+        {/* MATERIAS EN CUADRÍCULA ESTILO RECTÁNGULO */}
+        <section id="materias" className="space-y-4">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
             {subjects.map((subj) => (
               <div
@@ -344,259 +547,38 @@ export default function App() {
                   setEditingSubject(null);
                   setPinError('');
                 }}
-                className={`group relative overflow-hidden rounded-2xl p-6 bg-gradient-to-br ${subj.color} backdrop-blur-xl border border-white/[0.07] shadow-[inset_0_1px_1px_rgba(255,255,255,0.04)] shadow-lg hover:shadow-2xl hover:border-white/[0.15] hover:-translate-y-0.5 transition-all duration-300 cursor-pointer`}
+                className="flex items-center justify-center text-center p-8 bg-[#1c1c1e] border border-white/[0.06] hover:bg-[#252528] hover:border-white/[0.12] rounded-[2.2rem] shadow-lg hover:shadow-2xl hover:-translate-y-0.5 aspect-[1.6/1] transition-all duration-300 cursor-pointer select-none"
               >
-                <div className="flex justify-between items-start mb-4">
-                  <span className="px-2.5 py-1 rounded-lg bg-black/20 text-[10px] font-bold text-indigo-300 border border-white/[0.05]">
-                    {subj.classroom || 'Aula por definir'}
-                  </span>
-                  <svg className="w-4 h-4 text-slate-400 group-hover:text-white transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M9 5l7 7-7 7" />
-                  </svg>
-                </div>
-                <h3 className="text-base font-bold text-white tracking-tight mb-1 group-hover:text-indigo-200 transition-colors">{subj.name}</h3>
-                <p className="text-xs text-slate-400 truncate">{subj.professor}</p>
+                <h3 className="text-lg font-bold text-white tracking-tight leading-snug">
+                  {subj.name}
+                </h3>
               </div>
             ))}
           </div>
         </section>
 
         {/* SECCIÓN CRONOGRAMA INTERACTIVO */}
-        <section id="cronograma" className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+        <section id="cronograma" className="grid grid-cols-1 lg:grid-cols-3 gap-8 pt-6">
           
-          {/* PANEL PRINCIPAL: CALENDARIO DE ARRASTRE */}
-          <div 
-            onTouchStart={handleTouchStart}
-            onTouchMove={handleTouchMove}
-            onTouchEnd={handleTouchEnd}
-            className="lg:col-span-2 space-y-4 rounded-3xl p-6 bg-white/[0.03] backdrop-blur-2xl border border-white/[0.08] shadow-[inset_0_1px_1px_rgba(255,255,255,0.05)] shadow-2xl flex flex-col justify-between select-none overflow-hidden"
-          >
-            
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-4 pb-4 border-b border-white/[0.06]">
-              <div>
-                <h3 className="text-lg font-bold text-white tracking-tight">Cronograma de la Sección</h3>
-                <p className="text-xs text-slate-400">Controla el horario y las entregas grupales</p>
-              </div>
-              
-              {/* SWITCH IOS SEGMENTED CONTROL */}
-              <div className="relative flex bg-black/45 p-1 rounded-xl border border-white/[0.08] w-44 h-9 select-none shrink-0 self-start">
-                
-                {/* Pastilla indicadora */}
-                <div 
-                  className={`absolute top-1 bottom-1 left-1 rounded-lg bg-indigo-600/90 shadow-[0_2px_8px_rgba(99,102,241,0.3)] ${isDragging ? 'transition-none' : 'transition-transform duration-300 ease-out'}`}
-                  style={{ 
-                    width: 'calc(50% - 4px)',
-                    transform: `translateX(${clampedCapsuleTranslate}%)` 
-                  }}
-                />
-                
-                <button
-                  onClick={() => setViewMode('semanal')}
-                  className={`relative z-10 flex-1 text-center text-xs font-bold transition-colors duration-300 ${viewMode === 'semanal' ? 'text-white' : 'text-slate-400 hover:text-white'}`}
-                >
-                  Semanal
-                </button>
-                <button
-                  onClick={() => setViewMode('mensual')}
-                  className={`relative z-10 flex-1 text-center text-xs font-bold transition-colors duration-300 ${viewMode === 'mensual' ? 'text-white' : 'text-slate-400 hover:text-white'}`}
-                >
-                  Mensual
-                </button>
-              </div>
-            </div>
-
-            {/* CARRUSEL DE VISTAS (SLIDER) */}
-            <div className="relative overflow-hidden w-full flex-1">
-              <div 
-                ref={containerRef}
-                className={`flex w-[200%] ${isDragging ? 'transition-none' : 'transition-transform duration-300 cubic-bezier(0.16, 1, 0.3, 1)'}`}
-                style={{ transform: `translateX(${viewsTranslatePercent}%)` }}
-              >
-                
-                {/* 1. VISTA SEMANAL */}
-                <div className="w-1/2 shrink-0 pr-2">
-                  <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
-                    {WEEKDAYS.map((day) => {
-                      const { dayClasses, dayTasks } = getWeeklyData(day);
-
-                      return (
-                        <div key={day} className="rounded-xl p-4 bg-white/[0.02] border border-white/[0.05] shadow-[inset_0_1px_1px_rgba(255,255,255,0.03)] flex flex-col min-h-[220px]">
-                          <span className="text-[11px] font-extrabold uppercase tracking-wider text-indigo-400 mb-3 border-b border-white/[0.05] pb-1 block">
-                            {day}
-                          </span>
-                          
-                          <div className="space-y-2 mb-4">
-                            {dayClasses.map(cls => {
-                              const time = cls.schedule.find(sc => sc.day === day)?.time;
-                              return (
-                                <div key={cls.id} className="p-2 rounded bg-indigo-500/10 border border-indigo-500/15 text-xs">
-                                  <div className="font-semibold text-indigo-200 truncate">{cls.name}</div>
-                                  <div className="text-[10px] text-slate-400 mt-0.5">{time}</div>
-                                  <div className="text-[10px] text-indigo-400 font-semibold">{cls.classroom}</div>
-                                </div>
-                              );
-                            })}
-                            {dayClasses.length === 0 && (
-                              <div className="text-[10px] text-slate-500 italic">Sin clases</div>
-                            )}
-                          </div>
-
-                          <div className="mt-auto pt-2 border-t border-white/[0.05] space-y-1.5">
-                            <span className="text-[10px] font-bold text-slate-400 block">Entregas de la semana:</span>
-                            {dayTasks.map(task => {
-                              const subj = subjects.find(s => s.id === task.subject_id);
-                              return (
-                                <div key={task.id} className="p-1.5 rounded bg-amber-500/10 border border-amber-500/15 text-[11px] text-amber-200">
-                                  <span className="font-bold">[{subj?.name?.substring(0,5)}..]</span> {task.title}
-                                </div>
-                              );
-                            })}
-                            {dayTasks.length === 0 && (
-                              <div className="text-[10px] text-emerald-400/70">✓ Sin tareas</div>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                {/* 2. VISTA MENSUAL (CALENDARIO) */}
-                <div className="w-1/2 shrink-0 pl-2">
-                  <div className="space-y-4">
-                    {/* Selector de Mes */}
-                    <div className="flex items-center justify-between bg-white/[0.03] px-4 py-2 rounded-xl border border-white/[0.05]">
-                      <button onClick={handlePrevMonth} className="p-1 hover:text-indigo-400 transition-colors">
-                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M15 19l-7-7 7-7" /></svg>
-                      </button>
-                      <span className="text-xs font-bold tracking-widest uppercase text-white">
-                        {MONTHS[currentMonth]} {currentYear}
-                      </span>
-                      <button onClick={handleNextMonth} className="p-1 hover:text-indigo-400 transition-colors">
-                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M9 5l7 7-7 7" /></svg>
-                      </button>
-                    </div>
-
-                    {/* Rejilla de días */}
-                    <div className="grid grid-cols-7 gap-1 text-center">
-                      {['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'].map(d => (
-                        <span key={d} className="text-[10px] font-bold text-slate-500 uppercase py-1">{d}</span>
-                      ))}
-
-                      {calendarDays.map((date, idx) => {
-                        if (!date) {
-                          return <div key={`empty-${idx}`} className="p-2 opacity-0"></div>;
-                        }
-
-                        const isSelected = selectedDate && date.toDateString() === selectedDate.toDateString();
-                        const hasClasses = hasClassesOnDayOfWeek(date);
-                        const dayTasks = getTasksForDate(date);
-                        const hasTasks = dayTasks.length > 0;
-                        const hasPendingTasks = dayTasks.some(t => !t.completed);
-
-                        return (
-                          <button
-                            key={date.toDateString()}
-                            onClick={() => {
-                              setSelectedDate(date);
-                              const localDateStr = date.toISOString().split('T')[0];
-                              setNewTaskDate(localDateStr);
-                            }}
-                            className={`p-2.5 rounded-xl flex flex-col items-center justify-between relative transition-all min-h-[50px] ${
-                              isSelected 
-                                ? 'bg-indigo-600 text-white shadow-lg border border-indigo-400' 
-                                : 'bg-white/[0.02] hover:bg-white/[0.06] border border-white/[0.05] text-slate-300'
-                            }`}
-                          >
-                            <span className="text-xs font-semibold">{date.getDate()}</span>
-                            
-                            <div className="flex gap-1 mt-1 shrink-0">
-                              {hasClasses && (
-                                <span className={`w-1.5 h-1.5 rounded-full ${isSelected ? 'bg-white' : 'bg-indigo-400'}`}></span>
-                              )}
-                              {hasTasks && (
-                                <span className={`w-1.5 h-1.5 rounded-full ${hasPendingTasks ? 'bg-amber-400 animate-pulse' : 'bg-emerald-400'}`}></span>
-                              )}
-                            </div>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                </div>
-
-              </div>
-            </div>
+          {/* PANEL PRINCIPAL: CALENDARIO WIDGET MODULAR INTEGRADO */}
+          <div className="lg:col-span-2">
+            <CalendarWidget
+              subjects={subjects}
+              tasks={tasks}
+              selectedDate={selectedDate}
+              setSelectedDate={setSelectedDate}
+              handleToggleTask={handleToggleTask}
+              handleDeleteTask={handleDeleteTask}
+              viewMode={viewMode}
+              setViewMode={setViewMode}
+            />
           </div>
 
-          {/* PANEL LATERAL DETALLES */}
-          <div className="space-y-4 rounded-3xl p-6 bg-white/[0.03] backdrop-blur-2xl border border-white/[0.08] shadow-[inset_0_1px_1px_rgba(255,255,255,0.05)] shadow-2xl flex flex-col justify-between">
-            <div>
-              <span className="text-[10px] font-bold text-indigo-400 uppercase tracking-wider block">Actividades del Día</span>
-              <h4 className="text-sm font-bold text-white mt-0.5">
-                {selectedDate ? formatFriendlyDate(selectedDate) : 'Ningún día seleccionado'}
-              </h4>
-            </div>
-
-            <div className="space-y-3 pt-3 border-t border-white/[0.05] max-h-[220px] overflow-y-auto">
-              
-              {selectedDate && (
-                <div>
-                  <span className="text-[9px] font-bold text-slate-500 uppercase block mb-1">Clases fijos:</span>
-                  {subjects
-                    .filter(s => s.schedule && s.schedule.some(sc => sc.day === WEEKDAYS_FULL[selectedDate.getDay()]))
-                    .map(cls => {
-                      const time = cls.schedule.find(sc => sc.day === WEEKDAYS_FULL[selectedDate.getDay()])?.time;
-                      return (
-                        <div key={cls.id} className="p-2 mb-1.5 rounded bg-white/[0.02] border border-white/[0.04] flex items-center justify-between text-xs">
-                          <div>
-                            <p className="font-semibold text-slate-200">{cls.name}</p>
-                            <p className="text-[10px] text-slate-400">{time}</p>
-                          </div>
-                          <span className="px-1.5 py-0.5 rounded bg-indigo-500/10 border border-indigo-500/20 text-[9px] font-bold text-indigo-300">
-                            {cls.classroom}
-                          </span>
-                        </div>
-                      );
-                    })}
-                  {subjects.filter(s => s.schedule && s.schedule.some(sc => sc.day === WEEKDAYS_FULL[selectedDate.getDay()])).length === 0 && (
-                    <p className="text-[10px] text-slate-500 italic">No hay clases presenciales hoy.</p>
-                  )}
-                </div>
-              )}
-
-              <div className="pt-2 border-t border-white/[0.05]">
-                <span className="text-[9px] font-bold text-slate-500 uppercase block mb-1">Tareas y Evaluaciones:</span>
-                {getTasksForDate(selectedDate).map(task => {
-                  const subj = subjects.find(s => s.id === task.subject_id);
-                  return (
-                    <div key={task.id} className="flex items-center justify-between p-2 mb-1 rounded bg-white/[0.02] border border-white/[0.04] text-xs group">
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="checkbox"
-                          checked={task.completed}
-                          onChange={() => handleToggleTask(task)}
-                          className="w-3.5 h-3.5 rounded border-white/20 bg-black/40 text-indigo-600 cursor-pointer"
-                        />
-                        <span className={`${task.completed ? 'line-through text-slate-500' : 'text-slate-200 font-medium'}`}>
-                          [{subj?.name?.substring(0,5)}..] {task.title}
-                        </span>
-                      </div>
-                      <button onClick={() => handleDeleteTask(task.id)} className="text-slate-500 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity">
-                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
-                      </button>
-                    </div>
-                  );
-                })}
-                {getTasksForDate(selectedDate).length === 0 && (
-                  <p className="text-[10px] text-slate-500 italic">No hay tareas programadas para esta fecha.</p>
-                )}
-              </div>
-            </div>
-
-            <form onSubmit={handleAddTask} className="space-y-3 bg-white/[0.01] p-4 rounded-xl border border-white/[0.05] mt-auto">
+          {/* PANEL LATERAL: CREADOR DE TAREAS */}
+          <div className="space-y-4 rounded-[2.2rem] p-6 bg-[#1c1c1e] border border-white/[0.08] shadow-2xl flex flex-col justify-between">
+            <form onSubmit={handleAddTask} className="space-y-3 bg-[#0c0c0d]/40 p-4 rounded-2xl border border-white/[0.04] mt-auto">
               <span className="text-[10px] font-bold text-indigo-400 uppercase tracking-wider block border-b border-white/[0.05] pb-1">
-                Añadir Tarea para este día
+                Añadir Tarea para este día ({selectedDate ? formatFriendlyDate(selectedDate) : ''})
               </span>
 
               <div>
@@ -606,7 +588,7 @@ export default function App() {
                   placeholder="Ej. Examen Escrito (20%)"
                   value={newTaskTitle}
                   onChange={(e) => setNewTaskTitle(e.target.value)}
-                  className="w-full bg-black/30 border border-white/10 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500/40"
+                  className="w-full bg-[#0c0c0d] border border-white/[0.08] rounded-xl px-3 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500/40"
                 />
               </div>
 
@@ -616,7 +598,7 @@ export default function App() {
                   <select
                     value={newTaskSubject}
                     onChange={(e) => setNewTaskSubject(e.target.value)}
-                    className="w-full bg-black/30 border border-white/10 rounded-lg px-2 py-1.5 text-[11px] text-white focus:outline-none"
+                    className="w-full bg-[#0c0c0d] border border-white/[0.08] rounded-xl px-2 py-1.5 text-[11px] text-white focus:outline-none"
                   >
                     {subjects.map(s => (
                       <option key={s.id} value={s.id}>{s.name}</option>
@@ -629,7 +611,7 @@ export default function App() {
                     type="date"
                     value={newTaskDate}
                     onChange={(e) => setNewTaskDate(e.target.value)}
-                    className="w-full bg-black/30 border border-white/10 rounded-lg px-2 py-1.5 text-[11px] text-white focus:outline-none"
+                    className="w-full bg-[#0c0c0d] border border-white/[0.08] rounded-xl px-2 py-1.5 text-[11px] text-white focus:outline-none"
                   />
                 </div>
               </div>
@@ -641,7 +623,7 @@ export default function App() {
                   placeholder="PIN para publicar"
                   value={inputPin}
                   onChange={(e) => setInputPin(e.target.value)}
-                  className="w-full bg-black/30 border border-white/10 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500/40"
+                  className="w-full bg-[#0c0c0d] border border-white/[0.08] rounded-xl px-3 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500/40"
                 />
               </div>
 
@@ -657,15 +639,15 @@ export default function App() {
           </div>
         </section>
 
-        {/* NUEVA SECCIÓN: GUÍA ESTUDIANTIL Y ENLACES INSTITUCIONALES */}
+        {/* GUÍA ESTUDIANTIL Y ENLACES INSTITUCIONALES */}
         <section id="guia" className="grid grid-cols-1 md:grid-cols-3 gap-8">
           
           {/* Acordeón de Preguntas Frecuentes */}
-          <div className="md:col-span-2 space-y-4 rounded-3xl p-6 bg-white/[0.03] backdrop-blur-2xl border border-white/[0.08] shadow-[inset_0_1px_1px_rgba(255,255,255,0.05)] shadow-2xl">
+          <div className="md:col-span-2 space-y-4 rounded-[2.2rem] p-6 bg-[#1c1c1e] border border-white/[0.08] shadow-2xl">
             <div className="mb-4">
               <span className="text-xs uppercase tracking-widest text-indigo-400 font-bold">Ayuda e Información</span>
               <h3 className="text-lg font-bold text-white mt-1">Preguntas Frecuentes UNEG</h3>
-              <p className="text-xs text-slate-400">Guía rápida de supervivencia para estudiantes de pregrado</p>
+              <p className="text-xs text-[#8e8e93]">Guía rápida de supervivencia para estudiantes de pregrado</p>
             </div>
             
             <div className="space-y-3">
@@ -674,7 +656,7 @@ export default function App() {
                 return (
                   <div 
                     key={index} 
-                    className="rounded-xl border border-white/[0.05] bg-white/[0.01] overflow-hidden transition-all duration-300"
+                    className="rounded-xl border border-white/[0.05] bg-black/[0.15] overflow-hidden transition-all duration-300"
                   >
                     <button
                       onClick={() => setActiveFaq(isOpen ? null : index)}
@@ -693,7 +675,7 @@ export default function App() {
                     
                     <div
                       className={`transition-all duration-300 overflow-hidden ${
-                        isOpen ? 'max-h-56 border-t border-white/[0.05] p-4 bg-black/20' : 'max-h-0'
+                        isOpen ? 'max-h-56 border-t border-white/[0.05] p-4 bg-[#0c0c0d]/40' : 'max-h-0'
                       }`}
                     >
                       <p className="text-xs text-slate-300 leading-relaxed whitespace-pre-line">
@@ -707,11 +689,11 @@ export default function App() {
           </div>
 
           {/* Enlaces Oficiales */}
-          <div className="space-y-4 rounded-3xl p-6 bg-white/[0.03] backdrop-blur-2xl border border-white/[0.08] shadow-[inset_0_1px_1px_rgba(255,255,255,0.05)] shadow-2xl flex flex-col justify-between">
+          <div className="space-y-4 rounded-[2.2rem] p-6 bg-[#1c1c1e] border border-white/[0.08] shadow-2xl flex flex-col justify-between">
             <div>
               <span className="text-xs uppercase tracking-widest text-indigo-400 font-bold">Enlaces de Interés</span>
               <h3 className="text-lg font-bold text-white mt-1">Portales Oficiales</h3>
-              <p className="text-xs text-slate-400 mb-4">Acceso rápido a los sistemas de la universidad</p>
+              <p className="text-xs text-[#8e8e93] mb-4">Acceso rápido a los sistemas de la universidad</p>
             </div>
 
             <div className="space-y-3 flex-1 flex flex-col justify-center">
@@ -719,7 +701,7 @@ export default function App() {
                 href="https://virtual.uneg.edu.ve"
                 target="_blank"
                 rel="noopener noreferrer"
-                className="flex items-center gap-3 p-3 rounded-xl bg-white/[0.02] border border-white/[0.05] hover:bg-white/[0.06] transition-all group"
+                className="flex items-center gap-3 p-3 rounded-2xl bg-[#0c0c0d]/40 border border-white/[0.04] hover:bg-white/[0.04] transition-all group"
               >
                 <div className="p-2 rounded-lg bg-indigo-500/10 text-indigo-300 group-hover:scale-105 transition-transform">
                   <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.168.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.168.477-4.5 1.253" /></svg>
@@ -734,7 +716,7 @@ export default function App() {
                 href="https://virtual.uneg.edu.ve/"
                 target="_blank"
                 rel="noopener noreferrer"
-                className="flex items-center gap-3 p-3 rounded-xl bg-white/[0.02] border border-white/[0.05] hover:bg-white/[0.06] transition-all group"
+                className="flex items-center gap-3 p-3 rounded-2xl bg-[#0c0c0d]/40 border border-white/[0.04] hover:bg-white/[0.04] transition-all group"
               >
                 <div className="p-2 rounded-lg bg-indigo-500/10 text-indigo-300 group-hover:scale-105 transition-transform">
                   <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
@@ -749,7 +731,7 @@ export default function App() {
                 href="https://virtual.uneg.edu.ve/"
                 target="_blank"
                 rel="noopener noreferrer"
-                className="flex items-center gap-3 p-3 rounded-xl bg-white/[0.02] border border-white/[0.05] hover:bg-white/[0.06] transition-all group"
+                className="flex items-center gap-3 p-3 rounded-2xl bg-[#0c0c0d]/40 border border-white/[0.04] hover:bg-white/[0.04] transition-all group"
               >
                 <div className="p-2 rounded-lg bg-indigo-500/10 text-indigo-300 group-hover:scale-105 transition-transform">
                   <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" /></svg>
@@ -764,7 +746,7 @@ export default function App() {
                 href="http://www.uneg.edu.ve"
                 target="_blank"
                 rel="noopener noreferrer"
-                className="flex items-center gap-3 p-3 rounded-xl bg-white/[0.02] border border-white/[0.05] hover:bg-white/[0.06] transition-all group"
+                className="flex items-center gap-3 p-3 rounded-2xl bg-[#0c0c0d]/40 border border-white/[0.04] hover:bg-white/[0.04] transition-all group"
               >
                 <div className="p-2 rounded-lg bg-indigo-500/10 text-indigo-300 group-hover:scale-105 transition-transform">
                   <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9" /></svg>
@@ -780,10 +762,10 @@ export default function App() {
 
       </div>
 
-      {/* MODAL DETALLES DE MATERIA */}
+      {/* MODAL DETALLES */}
       {activeSubject && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-          <div className="relative w-full max-w-lg overflow-hidden rounded-3xl bg-slate-900/90 border border-white/10 shadow-2xl backdrop-blur-md p-6 max-h-[90vh] flex flex-col">
+          <div className="relative w-full max-w-lg overflow-hidden rounded-[2.2rem] bg-slate-900/90 border border-white/10 shadow-2xl backdrop-blur-md p-6 max-h-[90vh] flex flex-col">
             
             <div className="flex justify-between items-start mb-6 shrink-0">
               <div>
@@ -808,7 +790,7 @@ export default function App() {
                       type="text"
                       value={editingSubject.professor || ''}
                       onChange={(e) => setEditingSubject({...editingSubject, professor: e.target.value})}
-                      className="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-sm text-white"
+                      className="w-full bg-[#0c0c0d] border border-white/[0.08] rounded-xl px-3 py-2 text-sm text-white"
                     />
                   </div>
                   <div>
@@ -817,7 +799,7 @@ export default function App() {
                       type="text"
                       value={editingSubject.contact || ''}
                       onChange={(e) => setEditingSubject({...editingSubject, contact: e.target.value})}
-                      className="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-sm text-white"
+                      className="w-full bg-[#0c0c0d] border border-white/[0.08] rounded-xl px-3 py-2 text-sm text-white"
                     />
                   </div>
                   <div>
@@ -826,7 +808,7 @@ export default function App() {
                       type="text"
                       value={editingSubject.classroom || ''}
                       onChange={(e) => setEditingSubject({...editingSubject, classroom: e.target.value})}
-                      className="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-sm text-white"
+                      className="w-full bg-[#0c0c0d] border border-white/[0.08] rounded-xl px-3 py-2 text-sm text-white"
                     />
                   </div>
                   <div>
@@ -835,7 +817,7 @@ export default function App() {
                       type="text"
                       value={editingSubject.drive_link || ''}
                       onChange={(e) => setEditingSubject({...editingSubject, drive_link: e.target.value})}
-                      className="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-sm text-white"
+                      className="w-full bg-[#0c0c0d] border border-white/[0.08] rounded-xl px-3 py-2 text-sm text-white"
                     />
                   </div>
                   <div>
@@ -844,7 +826,7 @@ export default function App() {
                       rows="6"
                       value={editingSubject.evaluation_plan || ''}
                       onChange={(e) => setEditingSubject({...editingSubject, evaluation_plan: e.target.value})}
-                      className="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none"
+                      className="w-full bg-[#0c0c0d] border border-white/[0.08] rounded-xl px-3 py-2 text-sm text-white focus:outline-none"
                     ></textarea>
                   </div>
                   <div className="pt-2 border-t border-white/5">
@@ -854,7 +836,7 @@ export default function App() {
                       placeholder="Introduce el código para editar"
                       value={inputPin}
                       onChange={(e) => setInputPin(e.target.value)}
-                      className="w-full bg-black/40 border border-white/15 rounded-lg px-3 py-2 text-sm text-white"
+                      className="w-full bg-[#0c0c0d] border border-white/[0.08] rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500/40"
                     />
                     {pinError && <p className="text-xs text-red-400 font-semibold mt-1">{pinError}</p>}
                   </div>
@@ -923,7 +905,7 @@ export default function App() {
                         rel="noopener noreferrer"
                         className="flex items-center gap-3 p-3 rounded-xl bg-indigo-600/20 border border-indigo-500/30 text-indigo-200 hover:bg-indigo-600/30 transition-all group"
                       >
-                        <div className="p-2 rounded-lg bg-indigo-500/10">
+                        <div className="p-2 rounded-lg bg-[#0c0c0d]/40 text-indigo-300 group-hover:scale-105 transition-transform">
                           <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" /></svg>
                         </div>
                         <div>
